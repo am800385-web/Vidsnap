@@ -12,7 +12,6 @@ requirements = python3,kivy==2.3.0,yt-dlp,certifi,requests,urllib3,chardet,idna,
 orientation = portrait
 fullscreen = 0
 
-icon.filename = %(source.dir)s/icon.png
 
 android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
 
