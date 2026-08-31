@@ -7,7 +7,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 
 version = 1.0
-
+p4a.branch = 2024.01.21
 requirements = python3,kivy==2.3.0,yt-dlp,certifi,requests,urllib3,chardet,idna,charset-normalizer
 orientation = portrait
 fullscreen = 0
