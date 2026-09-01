@@ -193,6 +193,20 @@ class VidSnapUI(BoxLayout):
                 checkpoint("download hook: finished")
                 Clock.schedule_once(lambda dt: self.set_progress(100))
 
+        class QuietLogger:
+            """yt-dlp normally writes progress/warnings to stdout/stderr.
+            On Android, Kivy replaces those with something that isn't a
+            real file object, which breaks yt-dlp's internal .write()
+            calls. Giving it this custom logger bypasses that entirely."""
+            def debug(self, msg):
+                checkpoint(f"[yt-dlp debug] {msg}")
+
+            def warning(self, msg):
+                checkpoint(f"[yt-dlp warning] {msg}")
+
+            def error(self, msg):
+                checkpoint(f"[yt-dlp error] {msg}")
+
         opts = {
             "format": fmt,
             "outtmpl": os.path.join(SAVE_DIR, "%(title).60s.%(ext)s"),
@@ -200,6 +214,7 @@ class VidSnapUI(BoxLayout):
             "quiet": True,
             "no_warnings": True,
             "socket_timeout": 20,  # fail fast instead of hanging until Android kills the app
+            "logger": QuietLogger(),
         }
 
         try:
