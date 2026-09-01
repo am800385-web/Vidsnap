@@ -29,8 +29,15 @@ try:
         Permission.WRITE_EXTERNAL_STORAGE,
         Permission.READ_EXTERNAL_STORAGE,
     ])
-    from android.storage import app_storage_path
-    SAVE_DIR = os.path.join(app_storage_path(), "VidSnap_Downloads")
+    # Use the app's EXTERNAL files dir (visible in a normal file manager
+    # under Android/data/<package>/files), not the internal one
+    # (app_storage_path) which is truly private and invisible even
+    # without root.
+    from jnius import autoclass
+    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+    context = PythonActivity.mActivity
+    ext_dir = context.getExternalFilesDir(None).getAbsolutePath()
+    SAVE_DIR = os.path.join(ext_dir, "VidSnap_Downloads")
 except Exception:
     SAVE_DIR = os.path.expanduser("~")
 
