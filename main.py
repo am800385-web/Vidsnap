@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-VidSnap - نسخة تطبيق أندرويد (Kivy)
-محمّل فيديوهات من يوتيوب/فيسبوك/انستغرام/تيك توك/تويتر
+VidSnap - Android app (Kivy) - English UI
+Video downloader for YouTube/Facebook/Instagram/TikTok/Twitter
 """
 
 import os
@@ -20,32 +20,8 @@ from kivy.uix.progressbar import ProgressBar
 from kivy.uix.scrollview import ScrollView
 from kivy.clock import Clock
 from kivy.core.window import Window
-from kivy.core.text import LabelBase
-from kivy.resources import resource_add_path
 
-# --- تسجيل خط يدعم العربي (بدون هذا تطلع الحروف كمربعات) ---
-FONT_DIR = os.path.join(os.path.dirname(__file__), "assets")
-resource_add_path(FONT_DIR)
-ARABIC_FONT = os.path.join(FONT_DIR, "NotoNaskhArabic-Regular.ttf")
-try:
-    LabelBase.register(name="Arabic", fn_regular=ARABIC_FONT)
-    LabelBase.register(name="Roboto", fn_regular=ARABIC_FONT)  # يجعله الخط الافتراضي لكل النصوص
-    FONT_NAME = "Arabic"
-except Exception:
-    FONT_NAME = None
-
-# --- إعادة تشكيل الحروف العربية (بدونها تطلع منفصلة/بترتيب غلط) ---
-try:
-    import arabic_reshaper
-    from bidi.algorithm import get_display
-
-    def ar(text):
-        return get_display(arabic_reshaper.reshape(text))
-except Exception:
-    def ar(text):
-        return text
-
-# --- مكان حفظ آمن ما يحتاج صلاحيات خاصة على أندرويد الحديث ---
+# --- Safe save location that needs no special Android permission ---
 try:
     from android.permissions import request_permissions, Permission
     request_permissions([
@@ -66,21 +42,23 @@ except Exception:
 
 
 def log_crash(exc):
-    """يكتب أي خطأ غير متوقع بملف نصي جوا مجلد التطبيق، عشان تقدر تشوفه من مدير الملفات"""
+    """Writes any unexpected error to a text file inside the app folder,
+    so you can find it later with a file manager even without a PC."""
     try:
         crash_path = os.path.join(SAVE_DIR, "last_error.txt")
         with open(crash_path, "w", encoding="utf-8") as f:
-            f.write(traceback.format_exc())
+            f.write(str(exc) + "\n\n" + traceback.format_exc())
     except Exception:
         pass
 
-# صيغ بدون الحاجة لـ ffmpeg (بث واحد مدموج مسبقًا) عشان يشتغل على أندرويد بدون تعقيد
+
+# Single combined stream formats (no ffmpeg merge needed -> simpler on Android)
 QUALITIES = {
-    "144p - أصغر حجم": "worst[height<=144][ext=mp4]/worst",
-    "360p - عادية": "best[height<=360][ext=mp4]/best[height<=360]",
-    "480p - متوسطة": "best[height<=480][ext=mp4]/best[height<=480]",
+    "144p - smallest": "worst[height<=144][ext=mp4]/worst",
+    "360p - normal": "best[height<=360][ext=mp4]/best[height<=360]",
+    "480p - medium": "best[height<=480][ext=mp4]/best[height<=480]",
     "720p - HD": "best[height<=720][ext=mp4]/best[height<=720]",
-    "1080p - أفضل جودة متاحة": "best[height<=1080][ext=mp4]/best[height<=1080]",
+    "1080p - best available": "best[height<=1080][ext=mp4]/best[height<=1080]",
 }
 
 
@@ -90,30 +68,26 @@ class VidSnapUI(BoxLayout):
         Window.clearcolor = (0.07, 0.07, 0.1, 1)
 
         self.add_widget(Label(
-            text="[b]⚡ VidSnap[/b]", markup=True, font_size=30,
-            size_hint=(1, 0.12), color=(0.85, 0.4, 1, 1), font_name=FONT_NAME
+            text="[b]VidSnap[/b]", markup=True, font_size=30,
+            size_hint=(1, 0.12), color=(0.85, 0.4, 1, 1)
         ))
 
         self.url_input = TextInput(
-            hint_text=ar("الصق رابط الفيديو هنا..."),
-            multiline=False, size_hint=(1, 0.1), font_size=18,
-            font_name=FONT_NAME, base_direction="rtl"
+            hint_text="Paste video link here...",
+            multiline=False, size_hint=(1, 0.1), font_size=18
         )
         self.add_widget(self.url_input)
 
-        # نخزن أسماء الجودة الأصلية (بدون تشكيل) كمفاتيح، ونعرض نسخة مُشكّلة للعرض بس
-        self.quality_display_map = {ar(k): k for k in QUALITIES.keys()}
-
         self.quality_spinner = Spinner(
-            text=ar("اختر الجودة"),
-            values=list(self.quality_display_map.keys()),
-            size_hint=(1, 0.1), font_size=16, font_name=FONT_NAME
+            text="Select quality",
+            values=list(QUALITIES.keys()),
+            size_hint=(1, 0.1), font_size=16
         )
         self.add_widget(self.quality_spinner)
 
         self.download_btn = Button(
-            text=ar("⬇️  تحميل"), size_hint=(1, 0.1), font_size=20,
-            background_color=(0.6, 0.2, 0.9, 1), font_name=FONT_NAME
+            text="Download", size_hint=(1, 0.1), font_size=20,
+            background_color=(0.6, 0.2, 0.9, 1)
         )
         self.download_btn.bind(on_press=self.start_download)
         self.add_widget(self.download_btn)
@@ -122,15 +96,16 @@ class VidSnapUI(BoxLayout):
         self.add_widget(self.progress)
 
         self.status_label = Label(
-            text=ar(f"📁 مجلد الحفظ: {SAVE_DIR}"),
-            size_hint=(1, 0.15), font_size=14, color=(0.7, 0.7, 0.7, 1),
-            font_name=FONT_NAME, halign="center"
+            text=f"Save folder: {SAVE_DIR}",
+            size_hint=(1, 0.15), font_size=13, color=(0.7, 0.7, 0.7, 1),
+            halign="center"
         )
+        self.status_label.bind(size=self._update_status_wrap)
         self.add_widget(self.status_label)
 
         self.history_label = Label(
-            text=ar("سجل التنزيلات يظهر هنا"), size_hint_y=None, font_size=14,
-            halign="right", valign="top", font_name=FONT_NAME
+            text="Download history will appear here",
+            size_hint_y=None, font_size=14, halign="left", valign="top"
         )
         self.history_label.bind(texture_size=self.history_label.setter("size"))
         scroll = ScrollView(size_hint=(1, 0.4))
@@ -139,20 +114,23 @@ class VidSnapUI(BoxLayout):
 
         self.history = []
 
+    def _update_status_wrap(self, instance, value):
+        instance.text_size = (instance.width, None)
+
     def start_download(self, instance):
         try:
             url = self.url_input.text.strip()
-            quality_key = self.quality_display_map.get(self.quality_spinner.text)
+            quality_key = self.quality_spinner.text
 
             if not url:
-                self.status_label.text = ar("⚠️ الصق رابط أولاً")
+                self.status_label.text = "Please paste a link first"
                 return
             if quality_key not in QUALITIES:
-                self.status_label.text = ar("⚠️ اختر الجودة أولاً")
+                self.status_label.text = "Please select a quality first"
                 return
 
             self.download_btn.disabled = True
-            self.status_label.text = ar("🔍 جارٍ التحليل والتحميل...")
+            self.status_label.text = "Analyzing and downloading..."
             self.progress.value = 0
 
             thread = threading.Thread(
@@ -160,16 +138,16 @@ class VidSnapUI(BoxLayout):
             )
             thread.daemon = True
             thread.start()
-        except Exception:
-            log_crash(traceback.format_exc())
-            self.status_label.text = ar("❌ صار خطأ غير متوقع، شوف ملف last_error.txt")
+        except Exception as e:
+            log_crash(e)
+            self.status_label.text = "Unexpected error, check last_error.txt"
 
     def run_download(self, url, fmt):
         try:
             import yt_dlp
         except Exception as e:
             log_crash(e)
-            Clock.schedule_once(lambda dt: self.set_status(ar(f"❌ خطأ تحميل المكتبة: {e}")))
+            Clock.schedule_once(lambda dt: self.set_status(f"Library load error: {e}"))
             return
 
         def hook(d):
@@ -180,11 +158,6 @@ class VidSnapUI(BoxLayout):
                 Clock.schedule_once(lambda dt: self.set_progress(pct))
             elif d.get("status") == "finished":
                 Clock.schedule_once(lambda dt: self.set_progress(100))
-
-        title_holder = {"title": "video"}
-
-        def get_title_hook(info_dict):
-            title_holder["title"] = info_dict.get("title", "video")
 
         opts = {
             "format": fmt,
@@ -202,18 +175,18 @@ class VidSnapUI(BoxLayout):
             Clock.schedule_once(lambda dt: self.on_success(title))
         except Exception as e:
             log_crash(e)
-            Clock.schedule_once(lambda dt: self.set_status(ar(f"❌ فشل التحميل: {e}")))
+            Clock.schedule_once(lambda dt: self.set_status(f"Download failed: {e}"))
         finally:
             Clock.schedule_once(lambda dt: setattr(self.download_btn, "disabled", False))
 
     def set_progress(self, pct):
         self.progress.value = pct
-        self.status_label.text = ar(f"⬇️ جارٍ التحميل... {pct}%")
+        self.status_label.text = f"Downloading... {pct}%"
 
     def on_success(self, title):
-        self.status_label.text = ar(f"✅ تم الحفظ: {title}")
+        self.status_label.text = f"Saved: {title}"
         self.history.insert(0, title)
-        self.history_label.text = "\n".join(ar(f"• {t}") for t in self.history)
+        self.history_label.text = "\n".join(f"- {t}" for t in self.history)
 
     def set_status(self, text):
         self.status_label.text = text
@@ -227,7 +200,8 @@ class VidSnapApp(App):
 
 if __name__ == "__main__":
     def _excepthook(exc_type, exc_value, exc_tb):
-        """يمسك أي خطأ ما توقعناه قبل ما يقفل التطبيق بصمت، ويكتبه بملف"""
+        """Catches any error we didn't anticipate before it silently
+        kills the app, and writes it to a file we can inspect."""
         try:
             log_crash(exc_value)
         except Exception:
