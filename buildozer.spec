@@ -4,11 +4,11 @@ package.name = vidsnap
 package.domain = org.vidsnap
 
 source.dir = .
-source.include_exts = py,png,jpg,kv,atlas,ttf
+source.include_exts = py,png,jpg,kv,atlas
 
 version = 1.0
 
-requirements = python3,kivy==2.3.0,yt-dlp,certifi,requests,urllib3,chardet,idna,charset-normalizer,arabic_reshaper,python-bidi
+requirements = python3,kivy==2.3.0,yt-dlp,certifi,requests,urllib3,chardet,idna,charset-normalizer
 
 p4a.branch = v2024.01.21
 
