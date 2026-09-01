@@ -52,6 +52,19 @@ def log_crash(exc):
         pass
 
 
+def checkpoint(msg):
+    """Writes a timestamped progress line to a log file, so even if the
+    app gets force-killed mid-download, we can see the last thing that
+    happened by opening the file afterward."""
+    try:
+        import datetime
+        log_path = os.path.join(SAVE_DIR, "debug_log.txt")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now().isoformat()}  {msg}\n")
+    except Exception:
+        pass
+
+
 # Single combined stream formats (no ffmpeg merge needed -> simpler on Android)
 QUALITIES = {
     "144p - smallest": "worst[height<=144][ext=mp4]/worst",
@@ -143,12 +156,25 @@ class VidSnapUI(BoxLayout):
             self.status_label.text = "Unexpected error, check last_error.txt"
 
     def run_download(self, url, fmt):
+        checkpoint("run_download started")
         try:
             import yt_dlp
+            import certifi
+            checkpoint("yt_dlp and certifi imported OK")
         except Exception as e:
             log_crash(e)
+            checkpoint(f"IMPORT FAILED: {e}")
             Clock.schedule_once(lambda dt: self.set_status(f"Library load error: {e}"))
             return
+
+        # Fix: on Android, Python's ssl module sometimes can't find the
+        # system CA bundle, causing HTTPS requests to hang indefinitely
+        # with no error. Point it at certifi's bundled certificates instead.
+        try:
+            os.environ["SSL_CERT_FILE"] = certifi.where()
+            checkpoint("SSL_CERT_FILE set to " + certifi.where())
+        except Exception as e:
+            checkpoint(f"SSL_CERT_FILE setup failed: {e}")
 
         def hook(d):
             if d.get("status") == "downloading":
@@ -157,6 +183,7 @@ class VidSnapUI(BoxLayout):
                 pct = int(done / total * 100) if total else 0
                 Clock.schedule_once(lambda dt: self.set_progress(pct))
             elif d.get("status") == "finished":
+                checkpoint("download hook: finished")
                 Clock.schedule_once(lambda dt: self.set_progress(100))
 
         opts = {
@@ -165,16 +192,20 @@ class VidSnapUI(BoxLayout):
             "progress_hooks": [hook],
             "quiet": True,
             "no_warnings": True,
+            "socket_timeout": 20,  # fail fast instead of hanging until Android kills the app
         }
 
         try:
+            checkpoint(f"extract_info starting for url={url}")
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
+                checkpoint("extract_info finished OK")
                 title = re.sub(r'[\\/*?:"<>|]', "", info.get("title", "video"))[:60]
 
             Clock.schedule_once(lambda dt: self.on_success(title))
         except Exception as e:
             log_crash(e)
+            checkpoint(f"DOWNLOAD FAILED: {e}")
             Clock.schedule_once(lambda dt: self.set_status(f"Download failed: {e}"))
         finally:
             Clock.schedule_once(lambda dt: setattr(self.download_btn, "disabled", False))
