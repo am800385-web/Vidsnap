@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 VidSnap - Android app (Kivy) - English UI
-Video downloader for YouTube/Facebook/Instagram/TikTok/Twitter
+Video downloader for YouTube/Facebook/Instagram/TikTok/Twitter and any
+other site yt-dlp supports. Checks real available qualities first,
+then downloads the one the user picks.
 """
 
 import os
@@ -61,7 +63,7 @@ def log_crash(exc):
 
 def checkpoint(msg):
     """Writes a timestamped progress line to a log file, so even if the
-    app gets force-killed mid-download, we can see the last thing that
+    app gets force-killed mid-operation, we can see the last thing that
     happened by opening the file afterward."""
     try:
         import datetime
@@ -72,47 +74,68 @@ def checkpoint(msg):
         pass
 
 
-# Single combined stream formats (no ffmpeg merge needed -> simpler on Android)
-QUALITIES = {
-    "144p - smallest": "worst[height<=144][ext=mp4]/worst",
-    "360p - normal": "best[height<=360][ext=mp4]/best[height<=360]",
-    "480p - medium": "best[height<=480][ext=mp4]/best[height<=480]",
-    "720p - HD": "best[height<=720][ext=mp4]/best[height<=720]",
-    "1080p - best available": "best[height<=1080][ext=mp4]/best[height<=1080]",
-}
+class QuietLogger:
+    """yt-dlp normally writes progress/warnings to stdout/stderr. On
+    Android, Kivy replaces those with something that isn't a real file
+    object, which breaks yt-dlp's internal .write() calls. Giving it
+    this custom logger bypasses that entirely."""
+    def debug(self, msg):
+        checkpoint(f"[yt-dlp debug] {msg}")
+
+    def warning(self, msg):
+        checkpoint(f"[yt-dlp warning] {msg}")
+
+    def error(self, msg):
+        checkpoint(f"[yt-dlp error] {msg}")
+
+
+def setup_ssl():
+    try:
+        import certifi
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+        checkpoint("SSL_CERT_FILE set to " + certifi.where())
+    except Exception as e:
+        checkpoint(f"SSL_CERT_FILE setup failed: {e}")
 
 
 class VidSnapUI(BoxLayout):
     def __init__(self, **kwargs):
-        super().__init__(orientation="vertical", padding=20, spacing=12, **kwargs)
+        super().__init__(orientation="vertical", padding=20, spacing=10, **kwargs)
         Window.clearcolor = (0.07, 0.07, 0.1, 1)
 
         self.add_widget(Label(
-            text="[b]VidSnap[/b]", markup=True, font_size=30,
-            size_hint=(1, 0.12), color=(0.85, 0.4, 1, 1)
+            text="[b]VidSnap[/b]", markup=True, font_size=28,
+            size_hint=(1, 0.1), color=(0.85, 0.4, 1, 1)
         ))
 
         self.url_input = TextInput(
             hint_text="Paste video link here...",
-            multiline=False, size_hint=(1, 0.1), font_size=18
+            multiline=False, size_hint=(1, 0.09), font_size=17
         )
         self.add_widget(self.url_input)
 
+        self.check_btn = Button(
+            text="1) Check available qualities", size_hint=(1, 0.09), font_size=16,
+            background_color=(0.3, 0.3, 0.35, 1)
+        )
+        self.check_btn.bind(on_press=self.start_check)
+        self.add_widget(self.check_btn)
+
         self.quality_spinner = Spinner(
-            text="Select quality",
-            values=list(QUALITIES.keys()),
-            size_hint=(1, 0.1), font_size=16
+            text="Check a link first",
+            values=[],
+            size_hint=(1, 0.09), font_size=15, disabled=True
         )
         self.add_widget(self.quality_spinner)
 
         self.download_btn = Button(
-            text="Download", size_hint=(1, 0.1), font_size=20,
-            background_color=(0.6, 0.2, 0.9, 1)
+            text="2) Download", size_hint=(1, 0.09), font_size=18,
+            background_color=(0.6, 0.2, 0.9, 1), disabled=True
         )
         self.download_btn.bind(on_press=self.start_download)
         self.add_widget(self.download_btn)
 
-        self.progress = ProgressBar(max=100, value=0, size_hint=(1, 0.05))
+        self.progress = ProgressBar(max=100, value=0, size_hint=(1, 0.04))
         self.add_widget(self.progress)
 
         self.status_label = Label(
@@ -128,33 +151,150 @@ class VidSnapUI(BoxLayout):
             size_hint_y=None, font_size=14, halign="left", valign="top"
         )
         self.history_label.bind(texture_size=self.history_label.setter("size"))
-        scroll = ScrollView(size_hint=(1, 0.4))
+        scroll = ScrollView(size_hint=(1, 0.35))
         scroll.add_widget(self.history_label)
         self.add_widget(scroll)
 
         self.history = []
+        self.format_map = {}   # label -> format_id
+        self.last_url = None
 
     def _update_status_wrap(self, instance, value):
         instance.text_size = (instance.width, None)
 
-    def start_download(self, instance):
+    # ---------------- STEP 1: check available qualities ----------------
+
+    def start_check(self, instance):
         try:
             url = self.url_input.text.strip()
-            quality_key = self.quality_spinner.text
-
             if not url:
                 self.status_label.text = "Please paste a link first"
                 return
-            if quality_key not in QUALITIES:
+
+            self.check_btn.disabled = True
+            self.download_btn.disabled = True
+            self.quality_spinner.disabled = True
+            self.quality_spinner.text = "Checking..."
+            self.status_label.text = "Reading available qualities..."
+            self.progress.value = 0
+
+            thread = threading.Thread(target=self.run_check, args=(url,))
+            thread.daemon = True
+            thread.start()
+        except Exception as e:
+            log_crash(e)
+            self.status_label.text = "Unexpected error, check last_error.txt"
+
+    def run_check(self, url):
+        checkpoint("run_check started")
+        try:
+            import yt_dlp
+        except Exception as e:
+            log_crash(e)
+            checkpoint(f"IMPORT FAILED: {e}")
+            Clock.schedule_once(lambda dt: self.set_status(f"Library load error: {e}"))
+            Clock.schedule_once(lambda dt: setattr(self.check_btn, "disabled", False))
+            return
+
+        setup_ssl()
+
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "socket_timeout": 20,
+            "logger": QuietLogger(),
+        }
+
+        try:
+            checkpoint(f"extract_info (no download) starting for url={url}")
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            checkpoint("extract_info (no download) finished OK")
+
+            formats = info.get("formats") or []
+
+            # Video options: combined video+audio in a single file only
+            # (no ffmpeg on this build, so we can't merge separate streams)
+            video_by_height = {}
+            for f in formats:
+                if f.get("vcodec") not in (None, "none") and f.get("acodec") not in (None, "none"):
+                    h = f.get("height") or 0
+                    if h and (h not in video_by_height or
+                              (f.get("tbr") or 0) > (video_by_height[h].get("tbr") or 0)):
+                        video_by_height[h] = f
+
+            # Best audio-only option (original format, e.g. m4a/webm - no mp3
+            # conversion since that needs ffmpeg too)
+            audio_formats = [
+                f for f in formats
+                if f.get("vcodec") in (None, "none") and f.get("acodec") not in (None, "none")
+            ]
+            best_audio = None
+            if audio_formats:
+                best_audio = max(audio_formats, key=lambda f: f.get("abr") or 0)
+
+            format_map = {}
+            for h in sorted(video_by_height.keys(), reverse=True):
+                f = video_by_height[h]
+                ext = f.get("ext", "mp4")
+                size = f.get("filesize") or f.get("filesize_approx")
+                size_txt = f"~{size / 1024 / 1024:.0f}MB" if size else ""
+                label = f"{h}p ({ext}) {size_txt}".strip()
+                format_map[label] = f["format_id"]
+
+            if best_audio:
+                ext = best_audio.get("ext", "m4a")
+                abr = best_audio.get("abr")
+                abr_txt = f"{int(abr)}kbps" if abr else ""
+                label = f"Audio only ({ext}) {abr_txt}".strip()
+                format_map[label] = best_audio["format_id"]
+
+            if not format_map:
+                checkpoint("No combined/audio formats found for this URL")
+                Clock.schedule_once(lambda dt: self.set_status(
+                    "No downloadable single-file quality found for this link"))
+                Clock.schedule_once(lambda dt: setattr(self.check_btn, "disabled", False))
+                return
+
+            title = info.get("title", "video")
+            Clock.schedule_once(lambda dt: self.on_check_success(url, format_map, title))
+
+        except Exception as e:
+            log_crash(e)
+            checkpoint(f"CHECK FAILED: {e}")
+            Clock.schedule_once(lambda dt: self.set_status(f"Check failed: {e}"))
+            Clock.schedule_once(lambda dt: setattr(self.check_btn, "disabled", False))
+
+    def on_check_success(self, url, format_map, title):
+        self.last_url = url
+        self.format_map = format_map
+        self.quality_spinner.values = list(format_map.keys())
+        self.quality_spinner.text = list(format_map.keys())[0]
+        self.quality_spinner.disabled = False
+        self.download_btn.disabled = False
+        self.check_btn.disabled = False
+        self.status_label.text = f"Found: {title}"
+
+    # ---------------- STEP 2: download the chosen quality ----------------
+
+    def start_download(self, instance):
+        try:
+            if not self.last_url:
+                self.status_label.text = "Check a link first"
+                return
+            label = self.quality_spinner.text
+            format_id = self.format_map.get(label)
+            if not format_id:
                 self.status_label.text = "Please select a quality first"
                 return
 
             self.download_btn.disabled = True
-            self.status_label.text = "Analyzing and downloading..."
+            self.check_btn.disabled = True
+            self.status_label.text = "Downloading..."
             self.progress.value = 0
 
             thread = threading.Thread(
-                target=self.run_download, args=(url, QUALITIES[quality_key])
+                target=self.run_download, args=(self.last_url, format_id)
             )
             thread.daemon = True
             thread.start()
@@ -162,26 +302,18 @@ class VidSnapUI(BoxLayout):
             log_crash(e)
             self.status_label.text = "Unexpected error, check last_error.txt"
 
-    def run_download(self, url, fmt):
+    def run_download(self, url, format_id):
         checkpoint("run_download started")
         try:
             import yt_dlp
-            import certifi
-            checkpoint("yt_dlp and certifi imported OK")
         except Exception as e:
             log_crash(e)
             checkpoint(f"IMPORT FAILED: {e}")
             Clock.schedule_once(lambda dt: self.set_status(f"Library load error: {e}"))
+            Clock.schedule_once(lambda dt: self._reset_buttons())
             return
 
-        # Fix: on Android, Python's ssl module sometimes can't find the
-        # system CA bundle, causing HTTPS requests to hang indefinitely
-        # with no error. Point it at certifi's bundled certificates instead.
-        try:
-            os.environ["SSL_CERT_FILE"] = certifi.where()
-            checkpoint("SSL_CERT_FILE set to " + certifi.where())
-        except Exception as e:
-            checkpoint(f"SSL_CERT_FILE setup failed: {e}")
+        setup_ssl()
 
         def hook(d):
             if d.get("status") == "downloading":
@@ -193,35 +325,21 @@ class VidSnapUI(BoxLayout):
                 checkpoint("download hook: finished")
                 Clock.schedule_once(lambda dt: self.set_progress(100))
 
-        class QuietLogger:
-            """yt-dlp normally writes progress/warnings to stdout/stderr.
-            On Android, Kivy replaces those with something that isn't a
-            real file object, which breaks yt-dlp's internal .write()
-            calls. Giving it this custom logger bypasses that entirely."""
-            def debug(self, msg):
-                checkpoint(f"[yt-dlp debug] {msg}")
-
-            def warning(self, msg):
-                checkpoint(f"[yt-dlp warning] {msg}")
-
-            def error(self, msg):
-                checkpoint(f"[yt-dlp error] {msg}")
-
         opts = {
-            "format": fmt,
+            "format": format_id,
             "outtmpl": os.path.join(SAVE_DIR, "%(title).60s.%(ext)s"),
             "progress_hooks": [hook],
             "quiet": True,
             "no_warnings": True,
-            "socket_timeout": 20,  # fail fast instead of hanging until Android kills the app
+            "socket_timeout": 20,
             "logger": QuietLogger(),
         }
 
         try:
-            checkpoint(f"extract_info starting for url={url}")
+            checkpoint(f"download starting for url={url} format={format_id}")
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                checkpoint("extract_info finished OK")
+                checkpoint("download finished OK")
                 title = re.sub(r'[\\/*?:"<>|]', "", info.get("title", "video"))[:60]
 
             Clock.schedule_once(lambda dt: self.on_success(title))
@@ -230,7 +348,11 @@ class VidSnapUI(BoxLayout):
             checkpoint(f"DOWNLOAD FAILED: {e}")
             Clock.schedule_once(lambda dt: self.set_status(f"Download failed: {e}"))
         finally:
-            Clock.schedule_once(lambda dt: setattr(self.download_btn, "disabled", False))
+            Clock.schedule_once(lambda dt: self._reset_buttons())
+
+    def _reset_buttons(self):
+        self.download_btn.disabled = False
+        self.check_btn.disabled = False
 
     def set_progress(self, pct):
         self.progress.value = pct
